@@ -4,18 +4,10 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const mongoUri = process.env.MONGODB_URI;
-const PORT = process.env.PORT || 4000;
-
-// ডাবল ডিক্লেয়ারেশন ফিক্স করা হলো (এক লাইনে নিয়ে আসা হয়েছে)
-const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
-
+const PORT = process.env.PORT || 5000;
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.CLIENT_URL,
-    credentials: true,
-  }),
-);
+app.use(cors());
+const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
@@ -44,7 +36,7 @@ const verifyToken = async (req, res, next) => {
     const { payload } = await jwtVerify(token, JWKS);
     console.log("Verified User:", payload);
 
-    req.user = payload; // ইউজারের ডাটা রিকোয়েস্টে সেট করা হলো যেন পরের ফাংশনে ইউজ করা যায়
+    req.user = payload;
     next();
   } catch (error) {
     console.error("Token Error:", error.message);
@@ -59,6 +51,7 @@ async function run() {
     const db = client.db("IdeaVault");
     const dataBaseCollection = db.collection("IdeaVaults");
     const bookingCollection = db.collection("bookings");
+    const commentCollection = db.collection("comments");
 
     // ১. তৈরি করার রাউট
     app.post("/api/idea", async (req, res) => {
@@ -67,12 +60,31 @@ async function run() {
       res.json(result);
     });
 
-    // ২. সব আইডিয়া গেট করার রাউট
-    app.get("/api/idea", verifyToken, async (req, res) => {
+    // ২. সব আইডিয়া গেট করার রাউট (ক্যাটাগরি এবং সার্চ ফিল্টার সহ আপগ্রেডেড)
+    app.get("/api/idea", async (req, res) => {
       try {
-        const result = await dataBaseCollection.find({}).toArray();
+        const category = req.query.category || "";
+        const search = req.query.search || "";
+
+        let query = {};
+
+        // ক্যাটাগরি ফিল্টার লজিক
+        if (category && category !== "All") {
+          query.category = category;
+        }
+
+        // সার্চ ফিল্টার লজিক (টাইটেল এবং ট্যাগের ভেতর কেস-ইনসেনসিটিভ খুঁজবে)
+        if (search) {
+          query.$or = [
+            { ideaTitle: { $regex: search, $options: "i" } },
+            { tags: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        const result = await dataBaseCollection.find(query).toArray();
         res.json(result);
       } catch (error) {
+        console.error("Fetch ideas error:", error);
         res.status(500).json({ error: "Failed to fetch ideas" });
       }
     });
@@ -96,8 +108,8 @@ async function run() {
       }
     });
 
-    // ৪. বুকিং গেট করার রাউট (টোকেন ভেরিফাইড)
-    app.get("/api/ideadetails", verifyToken, async (req, res) => {
+    // ৪. বুকিং গেট করার রাউট
+    app.get("/api/ideadetails", async (req, res) => {
       try {
         const result = await bookingCollection.find({}).toArray();
         res.json(result);
@@ -107,7 +119,7 @@ async function run() {
     });
 
     // ৫. বুকিং তৈরি করার রাউট
-    app.post("/api/ideadetails", verifyToken, async (req, res) => {
+    app.post("/api/ideadetails", async (req, res) => {
       try {
         const bookingData = req.body;
         const result = await bookingCollection.insertOne(bookingData);
@@ -118,7 +130,80 @@ async function run() {
       }
     });
 
-    // await client.db("admin").command({ ping: 1 });
+    // ==========================================
+    // COMMENT ROUTES
+    // ==========================================
+
+    // কমেন্ট গেট করার রাউট
+    app.get("/api/comments", async (req, res) => {
+      try {
+        const result = await commentCollection.find({}).toArray();
+        res.json(result);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch comments" });
+      }
+    });
+
+    // কমেন্ট তৈরি করার রাউট
+    app.post("/api/comments", async (req, res) => {
+      try {
+        const commentData = req.body;
+        const result = await commentCollection.insertOne(commentData);
+        res.status(201).json(result);
+      } catch (error) {
+        console.error("Backend error inserting commentData:", error);
+        res.status(500).json({ error: "Failed to create commentData" });
+      }
+    });
+
+    // কমেন্ট আপডেট করার রাউট
+    app.patch("/api/comments/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: "Invalid ID format" });
+        }
+        const filter = { _id: new ObjectId(id) };
+        const updatedData = req.body;
+
+        const updateDoc = {
+          $set: {
+            text: updatedData.text,
+            time: updatedData.time,
+          },
+        };
+
+        const result = await commentCollection.updateOne(filter, updateDoc);
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ error: "Comment not found" });
+        }
+        res.json(result);
+      } catch (error) {
+        console.error("Backend error updating comment:", error);
+        res.status(500).json({ error: "Failed to update comment" });
+      }
+    });
+
+    // কমেন্ট ডিলিট করার রাউট
+    app.delete("/api/comments/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: "Invalid ID format" });
+        }
+        const query = { _id: new ObjectId(id) };
+        const result = await commentCollection.deleteOne(query);
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ error: "Comment not found" });
+        }
+        res.json(result);
+      } catch (error) {
+        console.error("Backend error deleting comment:", error);
+        res.status(500).json({ error: "Failed to delete comment" });
+      }
+    });
+
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",
     );
