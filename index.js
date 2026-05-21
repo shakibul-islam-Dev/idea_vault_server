@@ -10,7 +10,12 @@ const PORT = process.env.PORT || 4000;
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 
 app.use(express.json());
-app.use(cors());
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL,
+    credentials: true,
+  }),
+);
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
