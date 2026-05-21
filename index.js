@@ -63,7 +63,7 @@ async function run() {
     });
 
     // ২. সব আইডিয়া গেট করার রাউট
-    app.get("/api/idea", async (req, res) => {
+    app.get("/api/idea", verifyToken, async (req, res) => {
       try {
         const result = await dataBaseCollection.find({}).toArray();
         res.json(result);
@@ -102,7 +102,7 @@ async function run() {
     });
 
     // ৫. বুকিং তৈরি করার রাউট
-    app.post("/api/ideadetails", async (req, res) => {
+    app.post("/api/ideadetails", verifyToken, async (req, res) => {
       try {
         const bookingData = req.body;
         const result = await bookingCollection.insertOne(bookingData);
