@@ -7,7 +7,12 @@ const mongoUri = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 5000;
 app.use(express.json());
 //CORS
-app.use(cors());
+app.use(
+  corscors({
+    origin: ["https://idea-vault-sooty.vercel.app"],
+    credentials: true,
+  }),
+);
 // JWT
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 
