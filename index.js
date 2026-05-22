@@ -184,7 +184,7 @@ async function run() {
     // ==========================================
 
     // বুকিং গেট করার রাউট
-    app.get("/api/ideadetails", async (req, res) => {
+    app.get("/api/idea", async (req, res) => {
       try {
         const result = await bookingCollection.find({}).toArray();
         res.json(result);
@@ -194,7 +194,7 @@ async function run() {
     });
 
     // বুকিং তৈরি করার রাউট
-    app.post("/api/ideadetails", async (req, res) => {
+    app.post("/api/idea", async (req, res) => {
       try {
         const bookingData = req.body;
         const result = await bookingCollection.insertOne(bookingData);
