@@ -38,7 +38,6 @@ const JWKS = createRemoteJWKSet(
   new URL(`${process.env.CLIENT_URL || "http://localhost:3000"}/api/auth/jwks`),
 );
 
-// MiddleWare for Authentication (Fixed: Added JWT verification fallback)
 const verifyToken = async (req, res, next) => {
   let token = req.headers.authorization?.split(" ")[1];
 
@@ -46,33 +45,28 @@ const verifyToken = async (req, res, next) => {
     token = req.cookies?.["better-auth.session_token"];
   }
 
+  const clientLoginUrl = `${process.env.CLIENT_URL || "http://localhost:3000"}/login`;
+
   if (!token) {
-    return res.status(401).json({ message: "No token provided" });
+    return res.redirect(clientLoginUrl);
   }
 
   try {
-    // ১. প্রথমে JWT টোকেন ভেরিফাই করার চেষ্টা করবে (যেটা আগে মিসিং ছিল)
     try {
       const { payload } = await jwtVerify(token, JWKS);
-      // ভেরিফিকেশন সফল হলে req.user এ ডাটা সেট করে দিবে
       req.user = { id: payload.sub, _id: payload.sub, ...payload };
       return next();
     } catch (jwtError) {
-      // ২. যদি JWT না হয়, তবে আগের মতো সরাসরি ডাটাবেস থেকে সেশন খুঁজবে
       const db = client.db("IdeaVault");
-
       const session = await db.collection("session").findOne({ token: token });
 
       if (!session) {
-        return res
-          .status(403)
-          .json({ message: "Session invalid or not found" });
+        return res.redirect(clientLoginUrl);
       }
 
       const user = await db.collection("user").findOne({ id: session.userId });
 
       if (!user) {
-        // REMOVED DUPLICATE: const { ObjectId } = require("mongodb"); was removed from here
         try {
           const userByObjId = await db
             .collection("user")
@@ -84,7 +78,7 @@ const verifyToken = async (req, res, next) => {
         } catch (e) {}
 
         console.error("User not found for userId:", session.userId);
-        return res.status(403).json({ message: "User not found" });
+        return res.redirect(clientLoginUrl);
       }
 
       req.user = user;
@@ -92,10 +86,9 @@ const verifyToken = async (req, res, next) => {
     }
   } catch (error) {
     console.error("Verification Error:", error);
-    res.status(500).json({ message: "Internal server error" });
+    res.redirect(clientLoginUrl);
   }
 };
-
 async function run() {
   try {
     await client.connect();
