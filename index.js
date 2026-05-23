@@ -15,7 +15,7 @@ app.use((req, res, next) => {
 // CORS Configuration
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: ["http://localhost:3000", "https://idea-vault-sooty.vercel.app"],
     credentials: true,
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -32,7 +32,6 @@ const client = new MongoClient(mongoUri, {
     deprecationErrors: true,
   },
 });
-console.log(client);
 
 // JWK Token URL (Better Auth থেকে আসা টোকেন ভেরিফাই করার জন্য)
 const JWKS = createRemoteJWKSet(
@@ -92,7 +91,7 @@ const verifyToken = async (req, res, next) => {
 };
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("IdeaVault");
     const dataBaseCollection = db.collection("IdeaVaults");
     const bookingCollection = db.collection("bookings");
