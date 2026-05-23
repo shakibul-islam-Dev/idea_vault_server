@@ -32,6 +32,7 @@ const client = new MongoClient(mongoUri, {
     deprecationErrors: true,
   },
 });
+console.log(client);
 
 // JWK Token URL (Better Auth থেকে আসা টোকেন ভেরিফাই করার জন্য)
 const JWKS = createRemoteJWKSet(
@@ -65,7 +66,7 @@ const verifyToken = async (req, res, next) => {
       }
 
       const user = await db.collection("user").findOne({ id: session.userId });
-
+      //afoefe
       if (!user) {
         try {
           const userByObjId = await db
