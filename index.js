@@ -5,12 +5,13 @@ const cors = require("cors");
 const app = express();
 const mongoUri = process.env.MONGODB_URI;
 const PORT = process.env.PORT || 5000;
-
+const cookieParser = require("cookie-parser");
+app.use(cookieParser());
 app.use(express.json());
 app.use((req, res, next) => {
-  console.log(`[Request] ${req.method} ${req.path}`);
   next();
 });
+
 // CORS Configuration
 app.use(
   cors({
@@ -20,7 +21,6 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
-
 // JWT Token Verification Setup
 const { createRemoteJWKSet, jwtVerify } = require("jose-cjs");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -38,96 +38,92 @@ const JWKS = createRemoteJWKSet(
   new URL(`${process.env.CLIENT_URL || "http://localhost:3000"}/api/auth/jwks`),
 );
 
-// MiddleWare for Authentication
-// MiddleWare for Authentication
+// MiddleWare for Authentication (Fixed: Added JWT verification fallback)
 const verifyToken = async (req, res, next) => {
-  // ১. হেডার থেকে টোকেন চেক
-  let token = req?.headers?.authorization?.split(" ")[1];
+  let token = req.headers.authorization?.split(" ")[1];
 
-  // ২. কুকি থেকে টোকেন চেক
-  if (!token && req.headers.cookie) {
-    const cookies = req.headers.cookie.split(";").reduce((acc, cookie) => {
-      const [key, value] = cookie.trim().split("=");
-      acc[key] = value;
-      return acc;
-    }, {});
-
-    token =
-      cookies["better-auth.session_token"] ||
-      cookies["__Secure-better-auth.session_token"];
+  if (!token) {
+    token = req.cookies?.["better-auth.session_token"];
   }
 
-  // যদি টোকেন না পাওয়া যায়
-  if (!token || token === "undefined") {
-    return res.status(401).json({ message: "Unauthorized: No token provided" });
+  if (!token) {
+    return res.status(401).json({ message: "No token provided" });
   }
 
   try {
-    // ৩. JWT ভেরিফিকেশন
-    const verified = await jwtVerify(token, JWKS);
-    req.user = verified.payload;
-    next();
-  } catch (jwtError) {
-    // যদি JWT ভেরিফিকেশন ফেল করে, Better Auth-এর সেশন এন্ডপয়েন্ট চেক করুন
+    // ১. প্রথমে JWT টোকেন ভেরিফাই করার চেষ্টা করবে (যেটা আগে মিসিং ছিল)
     try {
-      const authResponse = await fetch(
-        `${process.env.CLIENT_URL}/api/auth/get-session`,
-        {
-          headers: {
-            // কুকি হেডারটি স্পষ্টভাবে পাঠান
-            Cookie: req.headers.cookie || "",
-          },
-        },
-      );
+      const { payload } = await jwtVerify(token, JWKS);
+      // ভেরিফিকেশন সফল হলে req.user এ ডাটা সেট করে দিবে
+      req.user = { id: payload.sub, _id: payload.sub, ...payload };
+      return next();
+    } catch (jwtError) {
+      // ২. যদি JWT না হয়, তবে আগের মতো সরাসরি ডাটাবেস থেকে সেশন খুঁজবে
+      const db = client.db("IdeaVault");
 
-      if (!authResponse.ok) throw new Error("Auth endpoint request failed");
+      const session = await db.collection("session").findOne({ token: token });
 
-      const sessionData = await authResponse.json();
-
-      if (sessionData && sessionData.user) {
-        req.user = sessionData.user;
-        next();
-      } else {
-        throw new Error("Session invalid");
+      if (!session) {
+        return res
+          .status(403)
+          .json({ message: "Session invalid or not found" });
       }
-    } catch (sessionError) {
-      console.error("Authentication failed:", sessionError.message);
-      return res.status(403).json({
-        message: "Invalid Token or Session",
-        error: sessionError.message,
-      });
+
+      const user = await db.collection("user").findOne({ id: session.userId });
+
+      if (!user) {
+        // REMOVED DUPLICATE: const { ObjectId } = require("mongodb"); was removed from here
+        try {
+          const userByObjId = await db
+            .collection("user")
+            .findOne({ _id: new ObjectId(session.userId) });
+          if (userByObjId) {
+            req.user = userByObjId;
+            return next();
+          }
+        } catch (e) {}
+
+        console.error("User not found for userId:", session.userId);
+        return res.status(403).json({ message: "User not found" });
+      }
+
+      req.user = user;
+      next();
     }
+  } catch (error) {
+    console.error("Verification Error:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 };
 
-// MONGO CONNECTION & ROUTES
 async function run() {
   try {
     await client.connect();
-
     const db = client.db("IdeaVault");
     const dataBaseCollection = db.collection("IdeaVaults");
     const bookingCollection = db.collection("bookings");
     const commentCollection = db.collection("comments");
-    const activitiesCollection = db.collection("activities"); // নতুন কালেকশন
+    const activitiesCollection = db.collection("activities");
 
     // ==========================================
-    // IDEA ROUTES
+    // IDEA ROUTES (Fixed)
     // ==========================================
 
-    app.post("/api/idea", async (req, res) => {
+    app.post("/api/idea", verifyToken, async (req, res) => {
       try {
-        const newIdea = req.body;
+        const { userId, ...formData } = req.body;
+        const currentUserId = req.user.id || req.user._id;
 
-        const userId = req.user?.sub || req.user?.id || "unknown";
-
-        const result = await dataBaseCollection.insertOne({
-          ...newIdea,
-          userId: userId,
+        const newIdea = {
+          ...formData,
+          userId: currentUserId,
           createdAt: new Date(),
-        });
+        };
+
+        const result = await dataBaseCollection.insertOne(newIdea);
         res.status(201).json(result);
       } catch (error) {
+        console.error("Error creating idea:", error);
         res.status(500).json({ error: "Failed to create idea" });
       }
     });
@@ -136,7 +132,6 @@ async function run() {
       try {
         const category = req.query.category || "";
         const search = req.query.search || "";
-
         const userId = req.query.userId || null;
 
         let query = {};
@@ -161,7 +156,6 @@ async function run() {
       }
     });
 
-    // ৩. নির্দিষ্ট একটি আইডিয়া গেট করার রাউট (GET)
     app.get("/api/idea/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -179,7 +173,6 @@ async function run() {
       }
     });
 
-    // ৪. নির্দিষ্ট আইডিয়া আপডেট করার রাউট (PATCH)
     app.patch("/api/idea/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -200,7 +193,6 @@ async function run() {
       }
     });
 
-    // ৫. নির্দিষ্ট আইডিয়া ডিলিট করার রাউট (DELETE)
     app.delete("/api/idea/:id", async (req, res) => {
       try {
         const id = req.params.id;
@@ -220,14 +212,13 @@ async function run() {
     });
 
     // ==========================================
-    // ACTIVITY ROUTES (From actions.js)
+    // ACTIVITY ROUTES
     // ==========================================
 
-    // ইউজারের অ্যাক্টিভিটি লগ করা (POST)
     app.get("/api/activity", verifyToken, async (req, res) => {
       try {
-        const userId = req.user.sub || req.user.id;
-        // শুধুমাত্র ঐ ইউজারের অ্যাক্টিভিটিগুলো নিয়ে আসছে
+        // userId বের করার লজিক একটু আপডেট করা হয়েছে যেন undefined না হয়
+        const userId = req.user.sub || req.user.id || req.user._id?.toString();
         const result = await activitiesCollection
           .find({ userId: userId })
           .toArray();
@@ -238,18 +229,17 @@ async function run() {
       }
     });
 
-    // ইউজারের অ্যাক্টিভিটি ডিলিট করা (DELETE)
-    app.delete("/api/activity/:id", async (req, res) => {
+    app.delete("/api/activity/:id", verifyToken, async (req, res) => {
       try {
         const activityId = req.params.id;
-        const userId = req.user.sub || req.user.id;
+        const userId = req.user.sub || req.user.id || req.user._id?.toString();
 
         if (!ObjectId.isValid(activityId))
           return res.status(400).json({ error: "Invalid ID format" });
 
         const result = await activitiesCollection.deleteOne({
           _id: new ObjectId(activityId),
-          userId: userId, // শুধুমাত্র ওই ইউজারই ডিলিট করতে পারবে
+          userId: userId,
         });
 
         res.json(result);
@@ -260,10 +250,9 @@ async function run() {
     });
 
     // ==========================================
-    // BOOKING ROUTES (Fixed Conflict)
+    // BOOKING ROUTES
     // ==========================================
 
-    // বুকিং গেট করার রাউট
     app.get("/api/bookings", async (req, res) => {
       try {
         const result = await bookingCollection.find({}).toArray();
@@ -273,7 +262,6 @@ async function run() {
       }
     });
 
-    // বুকিং তৈরি করার রাউট
     app.post("/api/bookings", async (req, res) => {
       try {
         const bookingData = req.body;
@@ -288,11 +276,6 @@ async function run() {
     // COMMENT ROUTES
     // ==========================================
 
-    // (আপনার আগের কমেন্ট রুটগুলো অপরিবর্তিত আছে)
-    // ==========================================
-    // COMMENT ROUTES (Updated with Activity Logging)
-    // ==========================================
-
     app.get("/api/comments", async (req, res) => {
       try {
         const result = await commentCollection.find({}).toArray();
@@ -302,17 +285,12 @@ async function run() {
       }
     });
 
-    // ১. Post Comment & Log Activity
     app.post("/api/comments", verifyToken, async (req, res) => {
       try {
-        const userId = req.user.sub || req.user.id;
-        const commentData = {
-          ...req.body,
-          userId: userId,
-        };
+        const userId = req.user.sub || req.user.id || req.user._id?.toString();
+        const commentData = { ...req.body, userId: userId };
         const result = await commentCollection.insertOne(commentData);
 
-        // 📝 Activity Log তৈরি করা হচ্ছে
         await activitiesCollection.insertOne({
           userId: userId,
           action: "Posted a new comment",
@@ -326,11 +304,10 @@ async function run() {
       }
     });
 
-    // ২. Update Comment & Log Activity
     app.patch("/api/comments/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const userId = req.user.sub || req.user.id;
+        const userId = req.user.sub || req.user.id || req.user._id?.toString();
         const updatedData = req.body;
 
         const result = await commentCollection.updateOne(
@@ -338,7 +315,6 @@ async function run() {
           { $set: { text: updatedData.text, time: updatedData.time } },
         );
 
-        // 📝 Activity Log তৈরি করা হচ্ছে
         await activitiesCollection.insertOne({
           userId: userId,
           action: "Updated a comment",
@@ -352,22 +328,18 @@ async function run() {
       }
     });
 
-    // ৩. Delete Comment & Log Activity
     app.delete("/api/comments/:id", verifyToken, async (req, res) => {
       try {
         const id = req.params.id;
-        const userId = req.user.sub || req.user.id;
+        const userId = req.user.sub || req.user.id || req.user._id?.toString();
 
-        // ডিলিট করার আগে কমেন্টটি খুঁজে বের করছি যেন অ্যাক্টিভিটিতে টেক্সটটি দেখানো যায় (ঐচ্ছিক)
         const commentToDelete = await commentCollection.findOne({
           _id: new ObjectId(id),
         });
-
         const result = await commentCollection.deleteOne({
           _id: new ObjectId(id),
         });
 
-        // 📝 Activity Log তৈরি করা হচ্ছে
         if (result.deletedCount > 0) {
           await activitiesCollection.insertOne({
             userId: userId,
@@ -382,6 +354,7 @@ async function run() {
         res.status(500).json({ error: "Failed to delete comment" });
       }
     });
+
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!",
     );
@@ -389,6 +362,7 @@ async function run() {
     console.error("Database connection failed:", error);
   }
 }
+
 run().catch(console.dir);
 
 app.get("/", (req, res) => {
